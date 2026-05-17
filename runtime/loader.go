@@ -32,6 +32,31 @@ func (l *Loader) BuildAndLoad(filePath string) (string, error) {
 		return filePath, nil
 	}
 
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read source file: %w", err)
+	}
+
+	fset := token.NewFileSet()
+	fileAST, err := parser.ParseFile(fset, filePath, content, parser.PackageClauseOnly)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse plugin structure: %w", err)
+	}
+
+	compilePath := filePath
+	if fileAST.Name.Name != "main" {
+		packageEndPos := fset.Position(fileAST.Name.End()).Offset
+		remainingCode := string(content[packageEndPos:])
+		rewrittenCode := "package main\n" + remainingCode
+
+		tmpPluginFile := filepath.Join(l.PluginDir, "tmp_"+filepath.Base(filePath))
+		if err := os.WriteFile(tmpPluginFile, []byte(rewrittenCode), 0644); err != nil {
+			return "", fmt.Errorf("failed to create compile asset: %w", err)
+		}
+		compilePath = tmpPluginFile
+		defer os.Remove(tmpPluginFile)
+	}
+
 	fileName := filepath.Base(filePath)
 	name := strings.TrimSuffix(fileName, ".go")
 	outPath := filepath.Join(l.PluginDir, name+".so")
@@ -40,7 +65,7 @@ func (l *Loader) BuildAndLoad(filePath string) (string, error) {
 		"go", "build",
 		"-buildmode=plugin",
 		"-o", outPath,
-		filePath,
+		compilePath,
 	)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 
