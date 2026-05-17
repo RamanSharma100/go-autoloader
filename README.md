@@ -1,4 +1,4 @@
-# go-autoloader [WIP => Fixing Runtime Function Calling for windows]
+# go-autoloader [WIP => Fixing Runtime Function Calling]
 
 A hybrid **AST + Plugin-based runtime module system for Go**
 
@@ -243,7 +243,7 @@ go run ./examples
 - AST parsing [Done]
 - Plugin build system [Done]
 - Module registry [Done]
-- Runtime execution [Under Progress for Windows]
+- Runtime execution [Under Progress fixing issues]
 
 ## v0.2 [Upcoming]
 
