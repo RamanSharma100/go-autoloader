@@ -1,0 +1,7 @@
+bin/
+dist/
+coverage.out
+*.exe
+*.dll
+*.so
+*.dylib
