@@ -22,7 +22,11 @@ func Scan(root string) ([]*core.Module, error) {
 		if err != nil {
 			return err
 		}
+
 		if info.IsDir() {
+			if info.Name() == ".plugins" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

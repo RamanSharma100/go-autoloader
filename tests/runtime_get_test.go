@@ -10,51 +10,102 @@ import (
 func TestGetModule(t *testing.T) {
 	engine := autoloader.Load("../examples/routes")
 
-	module := engine.Modules.Get("auth")
+	result := engine.Modules.Get("auth")
+	if result == nil {
+		t.Fatal("expected module, got nil")
+	}
 
-	if module == nil {
-		t.Fatal("expected module")
+	module, ok := result.(*core.ModuleHandle)
+	if !ok {
+		t.Fatalf("expected *core.ModuleHandle, got %T", result)
+	}
+
+	if module.Module == nil {
+		t.Fatal("expected module.Module to be non-nil")
 	}
 }
 
 func TestGetModuleByFilename(t *testing.T) {
 	engine := autoloader.Load("../examples/routes")
 
-	module := engine.Modules.Get("auth.go")
+	result := engine.Modules.Get("auth.go")
+	if result == nil {
+		t.Fatal("expected module, got nil")
+	}
 
-	if module == nil {
-		t.Fatal("expected module")
+	_, ok := result.(*core.ModuleHandle)
+	if !ok {
+		t.Fatalf("expected *core.ModuleHandle, got %T", result)
 	}
 }
 
 func TestGetFunction(t *testing.T) {
 	engine := autoloader.Load("../examples/routes")
 
-	sym := engine.Modules.Get("auth.Login")
+	result := engine.Modules.Get("auth.Login")
+	if result == nil {
+		t.Fatal("expected symbol for auth.Login, got nil — ensure auth.go exports a Login function and AutoParse is true")
+	}
 
-	s, ok := sym.(*core.Symbol)
+	s, ok := result.(*core.Symbol)
 	if !ok {
-		t.Fatalf("expected Symbol got %T", sym)
+		t.Fatalf("expected *core.Symbol, got %T", result)
 	}
 
 	if s.Type != "function" {
-		t.Fatal("expected function")
+		t.Fatalf("expected type 'function', got '%s'", s.Type)
 	}
 }
+
 func TestHasFunction(t *testing.T) {
 	engine := autoloader.Load("../examples/routes")
 
 	if !engine.Modules.HasFunction("auth.Login") {
-		t.Fatal("expected function")
+		t.Fatal("expected HasFunction to return true for auth.Login")
 	}
 
-	mod := engine.Modules.Get("auth")
-	handle, ok := mod.(*core.ModuleHandle)
+	result := engine.Modules.Get("auth")
+	if result == nil {
+		t.Fatal("expected module for 'auth', got nil")
+	}
+
+	handle, ok := result.(*core.ModuleHandle)
 	if !ok {
-		t.Fatal("expected ModuleHandle")
+		t.Fatalf("expected *core.ModuleHandle, got %T", result)
 	}
 
 	if !handle.HasFunction("Login") {
-		t.Fatal("expected function")
+		t.Fatal("expected handle.HasFunction to return true for Login")
+	}
+}
+
+func TestChainModuleFunctions(t *testing.T) {
+	engine := autoloader.Load("../examples/routes")
+
+	result := engine.Modules.Get("auth")
+	if result == nil {
+		t.Fatal("expected module, got nil")
+	}
+
+	handle, ok := result.(*core.ModuleHandle)
+	if !ok {
+		t.Fatalf("expected *core.ModuleHandle, got %T", result)
+	}
+
+	err := handle.Chain("Login", "Logout").Exec()
+	if err != nil {
+		t.Fatalf("chain execution failed: %v", err)
+	}
+}
+
+func TestRegistryChain(t *testing.T) {
+	engine := autoloader.Load("../examples/routes")
+
+	err := engine.Modules.
+		Chain("auth.Login", "auth.Logout").
+		Exec()
+
+	if err != nil {
+		t.Fatalf("registry chain failed: %v", err)
 	}
 }

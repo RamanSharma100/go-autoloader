@@ -1,263 +1,374 @@
-# go-autoloader [WIP => Fixing Runtime Function Calling]
+# go-autoloader
 
-A hybrid **AST + Plugin-based runtime module system for Go**
+> A hybrid AST + Plugin-based runtime module system for Go — built because nothing else did what was actually needed.
 
-`go-autoloader` scans Go projects, parses source files using AST, builds runtime metadata, and optionally compiles and executes modules using Go plugins.
-
-It bridges the gap between:
-
-- Static Go compilation
-- Dynamic module discovery
-- Runtime plugin execution
+**Status:** WIP — Core working on Linux/macOS. Windows runtime calling in progress (see limitations).
 
 ---
 
-# 🚀 Why this exists
+## Why this exists
 
-Go normally requires:
+While building **Workflow Studio** — an API orchestration platform in Go — I needed a way to load Go files dynamically at runtime and call their functions without recompiling the whole binary or manually wiring every import.
 
-- manual imports
-- manual wiring of modules
-- static execution paths
-- no runtime module discovery
+Go is statically compiled. There is no `require("./routes/auth")` like in Node. There is no `importlib` like in Python. You write the import, you recompile, you wire it up manually. Every single time.
 
-This project enables:
+I looked for a library that could:
 
-> “Load Go code like a runtime system while still staying within Go’s constraints.”
+- Scan a directory of Go files
+- Understand what functions, structs, and variables exist in them
+- Let me call those functions at runtime by name — like `engine.Modules.Call("auth.Login")`
+- Without me changing a single line in those Go files
 
----
-
-# 🧠 Architecture
-
-The system has 3 layers:
-
-## 1. Scanner (Discovery Layer)
-
-- Recursively scans files
-- Detects Go source files
-- Builds module registry
-
-## 2. Parser (AST Layer)
-
-- Parses Go using `go/ast`
-- Extracts:
-  - Functions
-  - Structs
-  - Interfaces
-  - Variables
-  - Constants
-
-- Builds symbol table (metadata only)
-
-## 3. Runtime Layer (Execution)
-
-Two execution modes:
-
-### A. Plugin Mode (Production)
-
-- Compiles `.go` → `.so`
-- Loads using `plugin.Open`
-- Executes real runtime functions
-
-### B. Symbol Fallback (Dev Mode)
-
-- Uses in-memory symbol registry
-- Executes bound function if available
+Nothing did all of this together.
 
 ---
 
-# 📦 Installation
+## What already exists — and why it wasn't enough
+
+| Library                            | What it does                                | Why it wasn't enough                                                                                 |
+| ---------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `plugin` (stdlib)                  | Loads `.so` files, looks up symbols         | Requires you to manually compile each file first, no scanning, no registry, no AST                   |
+| `pkujhd/goloader`                  | Loads compiled `.o` object files at runtime | Works at object level, not source level — requires `go tool compile` manually, no directory scanning |
+| `rainycape/dl`                     | dlopen/dlsym wrapper for C shared libs      | C libraries only, not Go source files                                                                |
+| `golang.org/x/tools/go/loader`     | Loads and type-checks Go packages           | Analysis only — no execution, no plugin building, no function calling                                |
+| `vladimirvivien/go-plugin-example` | Demo of Go's plugin package                 | Example code, not a library — no registry, no AST scanning                                           |
+
+None of them give you a single `engine.Modules.Call("auth.Login")` from a raw `.go` file.
+
+`go-autoloader` combines all three layers — scanning, parsing, and execution — into one cohesive runtime system.
+
+---
+
+## Architecture
+
+```
+Directory of .go files
+        ↓
+   [ Scanner ]          → walks files, skips .plugins/, builds module list
+        ↓
+   [ AST Parser ]       → extracts functions, structs, variables, constants, interfaces
+        ↓
+   [ Plugin Builder ]   → compiles .go → .so via go build -buildmode=plugin
+        ↓
+   [ Module Registry ]  → indexes everything by name with dot-notation access
+        ↓
+engine.Modules.Get("auth.Login")     → *Symbol
+engine.Modules.Call("auth.Login")    → executes
+engine.Modules.HasFunction("auth.Login") → bool
+```
+
+Three layers:
+
+**1. Scanner** — recursively walks a directory, skips `.plugins/` and binary artifacts, builds a module list with `RuntimeName` and `RuntimePath` for every file.
+
+**2. Parser (AST)** — uses `go/ast` to extract all exported and unexported symbols from each `.go` file. Builds a symbol table in memory. This is metadata only — nothing executes here.
+
+**3. Runtime** — two execution modes:
+
+- **Plugin mode (Linux/macOS):** compiles each `.go` to a `.so` using `go build -buildmode=plugin`, loads it via `plugin.Open`, and executes functions via `plugin.Lookup` + reflection.
+- **Windows fallback (WIP):** rewrites the source file with a `main` package wrapper and streams it through `go run -` via stdin. Runtime function calling on Windows is currently unreliable — tracked below.
+
+---
+
+## Installation
 
 ```bash
 go get github.com/RamanSharma100/go-autoloader
 ```
 
+Requires Go 1.18+ and CGO enabled on Linux/macOS for plugin mode.
+
 ---
 
-# ⚡ Quick Start
+## Quick Start
 
 ```go
 package main
 
-import autoloader "github.com/RamanSharma100/go-autoloader"
+import (
+    autoloader "github.com/RamanSharma100/go-autoloader"
+    "github.com/RamanSharma100/go-autoloader/core"
+)
 
 func main() {
+    engine := autoloader.Load("./examples/routes")
 
-	engine := autoloader.Load("./examples")
+    // get a module
+    result := engine.Modules.Get("auth")
+    handle := result.(*core.ModuleHandle)
 
-	mod := engine.Modules.Get("auth").(*core.ModuleHandle)
+    // check and call
+    if handle.HasFunction("Login") {
+        handle.Call("Login", "user@example.com")
+    }
 
-	mod.Call("Login", "hello", 123)
+    // dot-notation symbol lookup
+    sym := engine.Modules.Get("auth.Login")
+    symbol := sym.(*core.Symbol)
+    println(symbol.Type) // "function"
 
-	if mod.HasFunction("Login") {
-		println("Login exists")
-	}
+    // call directly from registry
+    engine.Modules.Call("auth.Login", "user@example.com")
+
+    // chain multiple functions on a module
+    handle.Chain("Login", "Logout").
+        With("Login", "user@example.com").
+        Exec()
+
+    // chain across modules from registry
+    engine.Modules.Chain("auth.Login", "users.GetProfile").
+        With("auth.Login", "user@example.com").
+        Exec()
 }
 ```
 
 ---
 
-# 📂 Example Go File
+## Example Go File
+
+No changes needed to your Go files. Just write normal Go:
 
 ```go
 package routes
 
 func Login(name string) {
-	println("Login called")
+    println("Login called with:", name)
 }
 
 func Logout() {
-	println("Logout called")
+    println("Logout called")
 }
 ```
 
 ---
 
-# ⚙️ Auto Behavior
+## API Reference
 
-When a Go file is loaded:
-
-### AST parsing extracts:
-
-- function names
-- struct names
-- variables
-- interfaces
-
-### Plugin system:
-
-- compiles file using:
-
-```bash
-go build -buildmode=plugin
-```
-
-- loads `.so` dynamically
-- enables runtime execution
-
----
-
-# 🔧 Core API
-
-## Load Engine
+### Load engine
 
 ```go
 engine := autoloader.Load("./routes")
+
+// or with config
+engine := autoloader.LoadWithConfig("./routes", core.Config{
+    AutoParse: true,
+})
 ```
 
----
-
-## Get Module
+### Module access
 
 ```go
-mod := engine.Modules.Get("auth").(*core.ModuleHandle)
+// get module handle
+result := engine.Modules.Get("auth")
+handle := result.(*core.ModuleHandle)
+
+// get by filename
+result := engine.Modules.Get("auth.go")
+
+// get symbol directly
+sym := engine.Modules.Get("auth.Login")
+symbol := sym.(*core.Symbol)
+println(symbol.Name, symbol.Type)
 ```
 
----
-
-## Call Function
+### Function checks
 
 ```go
-mod.Call("Login", "arg1", 123)
+engine.Modules.HasFunction("auth.Login")  // true/false from registry
+handle.HasFunction("Login")               // true/false from module handle
 ```
 
----
-
-## Check Function
+### Calling functions
 
 ```go
-mod.HasFunction("Login")
+// from registry
+engine.Modules.Call("auth.Login", "arg1")
+
+// from module handle
+handle.Call("Login", "arg1")
+```
+
+### Chaining
+
+```go
+// single module chain
+handle.Chain("Login", "Validate", "Logout").
+    With("Login", "user@example.com").
+    With("Validate", "token_xyz").
+    Exec()
+
+// cross-module chain from registry
+engine.Modules.Chain("auth.Login", "users.GetProfile", "audit.Log").
+    With("auth.Login", "user@example.com").
+    Exec()
+
+// check chain error
+chain := handle.Chain("Login", "Logout")
+if err := chain.Exec(); err != nil {
+    println("chain failed:", err.Error())
+}
 ```
 
 ---
 
-# 🔌 Plugin System
+## Windows — Current Status
 
-Internally uses:
+**Plugin mode does not work on Windows.** Go's `plugin` package requires CGO and ELF shared object support — neither of which Windows provides natively.
+
+The current Windows fallback rewrites each `.go` file with a `main` package wrapper and pipes it through `go run -` via stdin. This works for simple standalone function calls but has known issues:
+
+- Functions with external package imports fail because the rewritten wrapper doesn't carry dependencies
+- No argument type safety — everything is passed as `fmt.Sprintf("%#v", arg)` expressions
+- `go run` subprocess overhead per call makes it impractical for chains or loops
+- No symbol registry on Windows since plugins never build — `HasFunction` works (AST still parses), but `Call` may fail silently
+
+**What is being worked on for Windows:**
+
+- Pre-generating a proper `main.go` wrapper per module with correct imports extracted from AST
+- Using `go run` with a temp directory instead of stdin streaming to support multi-file dependencies
+- Alternatively: exploring `pkujhd/goloader` as a Windows-compatible execution backend that works at the object file level without CGO
+
+If you are on Windows and only need metadata (scanning, AST, `HasFunction`, `Get`), everything works fine. Runtime execution via `Call` and `Chain` is unreliable until the above is resolved.
+
+---
+
+## Running Tests
 
 ```bash
-go build -buildmode=plugin
-```
+# Linux/macOS
+go test ./... -v
 
-Then loads:
-
-```go
-plugin.Open(path)
-```
-
-Execution flow:
-
-```
-Call()
-  ↓
-Check Plugin
-  ↓
-plugin.Lookup("Login")
-  ↓
-Execute function
+# Windows (metadata tests only — execution tests will fail)
+go test ./... -v -run "TestGetModule|TestGetModuleByFilename|TestGetFunction|TestHasFunction"
 ```
 
 ---
 
-# 🧪 Running Tests
-
-```bash
-go test ./...
-```
-
----
-
-# 🏗 Running Example
+## Running the Example
 
 ```bash
 go run ./examples
 ```
 
+## Output of Example
+
+```bash
+/app # cd examples/
+/app/examples # go run main.go
+[DETECTED JSON FILE]
+
+[LOADED /app/examples/config/app.json][DETECTED CODE FILE]
+
+[LOADED /app/examples/main.go]
+[DETECTED GOLANG]
+[PARSING GOLANG]
+2026/05/18 08:34:18 [PLUGIN BUILT] /app/examples/.plugins/main.so
+pluginPath /app/examples/.plugins/main.so
+[MAKING PLUGIN]
+[DETECTED TEXT FILE]
+
+[LOADED /app/examples/notes/readme.txt][DETECTED CODE FILE]
+
+[LOADED /app/examples/routes/admin.go]
+[DETECTED GOLANG]
+[PARSING GOLANG]
+2026/05/18 08:34:18 [PLUGIN BUILT] /app/examples/.plugins/admin.so
+pluginPath /app/examples/.plugins/admin.so
+[MAKING PLUGIN]
+[DETECTED CODE FILE]
+
+[LOADED /app/examples/routes/auth.go]
+[DETECTED GOLANG]
+[PARSING GOLANG]
+2026/05/18 08:34:18 [PLUGIN BUILT] /app/examples/.plugins/auth.so
+pluginPath /app/examples/.plugins/auth.so
+[MAKING PLUGIN]
+[DETECTED CODE FILE]
+
+[LOADED /app/examples/routes/users.go]
+[DETECTED GOLANG]
+[PARSING GOLANG]
+2026/05/18 08:34:18 [PLUGIN BUILT] /app/examples/.plugins/users.so
+pluginPath /app/examples/.plugins/users.so
+[MAKING PLUGIN]
+
+=== MODULES ===
+
+Name: app
+Path: /app/examples/config/app.json
+Kind: json
+Extension: .json
+
+Name: main
+Path: /app/examples/main.go
+Kind: code
+Extension: .go
+Functions:
+ - main
+
+Name: readme
+Path: /app/examples/notes/readme.txt
+Kind: text
+Extension: .txt
+
+Name: admin
+Path: /app/examples/routes/admin.go
+Kind: code
+Extension: .go
+Functions:
+ - CreateAdmin
+
+Name: auth
+Path: /app/examples/routes/auth.go
+Kind: code
+Extension: .go
+Found Login
+Calling Login
+[RUNTIME] calling: Login
+Login Worked!
+Functions:
+ - Login
+ - Logout
+
+Name: users
+Path: /app/examples/routes/users.go
+Kind: code
+Extension: .go
+Functions:
+ - CreateUser
+
+/app/examples
+```
+
 ---
 
-# 📌 Design Principles
+## Roadmap
 
-- AST = metadata only
-- Plugin = execution engine
-- Module = runtime bridge
-- No duplication of execution logic
-- Minimal abstraction layers
-- Go-native plugin runtime
+**v0.1 — current**
 
----
+- File scanning ✅
+- AST parsing ✅
+- Plugin build system ✅
+- Module registry ✅
+- Dot-notation symbol lookup ✅
+- Function chaining ✅
+- Runtime execution — Linux/macOS ✅
+- Runtime execution — Windows 🔧 in progress
 
-# 🧭 Limitations (Important)
+**v0.2**
 
-- Go plugins only work on Linux/macOS/compatible builds
-- Windows support is limited
-- Functions must be exported for plugin execution
-- No hot reload yet (planned)
+- File watcher / hot reload
+- Plugin caching (skip rebuild if source unchanged)
+- Dependency graph between modules
+- Windows execution via proper temp-dir runner
 
----
+**v0.3**
 
-# 🛣 Roadmap
-
-## v0.1
-
-- File scanning [Done]
-- AST parsing [Done]
-- Plugin build system [Done]
-- Module registry [Done]
-- Runtime execution [Under Progress fixing issues]
-
-## v0.2 [Upcoming]
-
-- File watcher (hot reload)
-- Plugin caching
-- Dependency graph
-
-## v0.3
-
-- Middleware system
-- Hooks (before/after call)
+- Middleware system (before/after call hooks)
 - Module lifecycle events
+- Exported symbol type introspection with full signatures
 
-## v1.0
+**v1.0**
 
 - Full runtime orchestration
 - Multi-module execution graph
@@ -265,6 +376,26 @@ go run ./examples
 
 ---
 
-# 💡 Philosophy
+## Design Principles
 
-> “Go should not feel static when building systems — it should behave like a runtime engine when needed.”
+- AST is metadata only — it never executes anything
+- Plugin is the execution engine on supported platforms
+- Module is the runtime bridge between discovery and execution
+- The registry is the single source of truth — one `Get()` call, consistent behavior
+- No magic — everything is explicit, traceable, and debuggable
+
+---
+
+## Limitations
+
+- Plugin mode requires Linux or macOS (Go stdlib constraint — `plugin` package is not supported on Windows)
+- Functions must be exported (capital letter) for plugin execution via `plugin.Lookup`
+- All files in the scanned directory get compiled — there is no selective include yet
+- No hot reload yet (planned v0.2)
+- Windows `Call` is unreliable for functions with external imports
+
+---
+
+## Philosophy
+
+> Go should not feel static when you are building systems that need to grow at runtime. The compiler is a tool — not a ceiling.

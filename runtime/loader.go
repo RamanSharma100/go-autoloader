@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"plugin"
+	"reflect"
 	"runtime"
 	"strings"
 )
@@ -105,12 +106,32 @@ func (l *Loader) CallPlugin(p *plugin.Plugin, filePath string, name string, args
 		return err
 	}
 
-	fn, ok := sym.(func(...any))
-	if !ok {
-		return fmt.Errorf("symbol %s does not match expected function signature func(...any)", name)
+	v := reflect.ValueOf(sym)
+	if v.Kind() != reflect.Func {
+		return fmt.Errorf("symbol %s is not a function", name)
 	}
 
-	fn(args...)
+	t := v.Type()
+	reflectArgs := make([]reflect.Value, 0)
+
+	if t.IsVariadic() {
+		for _, arg := range args {
+			reflectArgs = append(reflectArgs, reflect.ValueOf(arg))
+		}
+		v.Call(reflectArgs)
+		return nil
+	}
+
+	numParams := t.NumIn()
+	for i := 0; i < numParams && i < len(args); i++ {
+		reflectArgs = append(reflectArgs, reflect.ValueOf(args[i]))
+	}
+
+	for len(reflectArgs) < numParams {
+		reflectArgs = append(reflectArgs, reflect.Zero(t.In(len(reflectArgs))))
+	}
+
+	v.Call(reflectArgs)
 	return nil
 }
 
